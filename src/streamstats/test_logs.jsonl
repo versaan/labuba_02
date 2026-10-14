@@ -1,0 +1,2 @@
+{"timestamp": "2026-10-11T08:15:30Z", "level": "INFO", "source": "auth_service", "message": "User 42 logged in successfully"}
+{"timestamp": "2026-10-11T08:16:05Z", "level": "WARNING", "source": "payment_gateway", "message": "Payment gateway latency is high"}
