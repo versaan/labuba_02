@@ -98,3 +98,97 @@ poetry run black --check .
 poetry run mypy src tests
 
 ```
+## Архитектура системы
+
+```mermaid
+flowchart TB
+    %% ============ СТИЛИ ============
+    classDef cli      fill:#E3F2FD,stroke:#1565C0,stroke-width:2px,color:#0D47A1,font-weight:bold
+    classDef ing      fill:#E8F5E9,stroke:#2E7D32,stroke-width:2px,color:#1B5E20,font-weight:bold
+    classDef dom      fill:#F3E5F5,stroke:#6A1B9A,stroke-width:2px,color:#4A148C,font-weight:bold
+    classDef ana      fill:#FFF3E0,stroke:#E65100,stroke-width:2px,color:#BF360C,font-weight:bold
+    classDef rep      fill:#E0F2F1,stroke:#00695C,stroke-width:2px,color:#004D40,font-weight:bold
+    classDef err      fill:#FFEBEE,stroke:#C62828,stroke-width:2px,color:#B71C1C,font-weight:bold
+    classDef data     fill:#FAFAFA,stroke:#37474F,stroke-width:1.5px,color:#263238
+    classDef decision fill:#FFFDE7,stroke:#F9A825,stroke-width:2px,color:#F57F17,font-weight:bold
+    classDef file     fill:#ECEFF1,stroke:#546E7A,stroke-width:1.5px,color:#263238
+
+    %% ============ CLI LAYER ============
+    subgraph CLI["🟦  CLI Layer — __main__.py"]
+        direction TB
+        ARGS["StreamStatsArgumentParser<br/>разбор аргументов"]:::cli
+        ORCH["Оркестрация пайплайна<br/>INPUT…, --format, --skip-invalid"]:::cli
+        EXIT["sys.exit(code=2)<br/>сообщение в stderr"]:::err
+        ARGS --> ORCH
+        ORCH -.->|CLIConfigError| EXIT
+    end
+
+    %% ============ INGESTION LAYER ============
+    subgraph ING["🟩  Ingestion Layer — parsers.py"]
+        direction TB
+        FACTORY["get_parser(path, format)"]:::ing
+        FMT{"Формат?"}:::decision
+        JSONL["JSONLParser.parse()"]:::ing
+        CSV["CSVParser.parse()"]:::ing
+        BASE["BaseParser · Template Method<br/>UTF-8, skipped_count,<br/>обогащение ошибок line_number + file_path"]:::ing
+        CHECK{"Ошибка<br/>парсинга?"}:::decision
+        SKIP["WARNING · skipped_count++"]:::err
+        FAIL["fail-fast<br/>InvalidEventError"]:::err
+
+        FACTORY --> FMT
+        FMT -->|".jsonl"| JSONL
+        FMT -->|".csv"| CSV
+        BASE -.->|"управляет"| JSONL
+        BASE -.->|"управляет"| CSV
+        JSONL --> CHECK
+        CSV --> CHECK
+        CHECK -->|"--skip-invalid"| SKIP
+        CHECK -->|"строгий режим"| FAIL
+    end
+
+    %% ============ DOMAIN LAYER ============
+    subgraph DOM["🟪  Domain Layer — models.py · constants.py · errors.py"]
+        direction TB
+        EVENT["Event (immutable)<br/>timestamp · level · source · message<br/>ISO 8601 · VALID_LEVELS · __eq__ → NotImplemented"]:::dom
+        ERRORS["StreamStatsError<br/>├── CLIConfigError<br/>├── UnsupportedFormatError<br/>└── InvalidEventError → InvalidTimestampError"]:::dom
+    end
+
+    %% ============ ANALYTICS LAYER ============
+    subgraph ANA["🟧  Analytics Layer — analysis.py"]
+        direction TB
+        PROCESS["LogAnal.process(event)<br/>Counter обновляется на лету · O(1)"]:::ana
+        STATS["LogAnal.get_stats()<br/>dict[str, Any]"]:::ana
+        PROCESS --> STATS
+    end
+
+    %% ============ REPORTING LAYER ============
+    subgraph REP["🟩  Reporting Layer — report.py"]
+        direction TB
+        WRITE["write_report(dict, path, format)<br/>создание директорий parents=True"]:::rep
+        OUTJSON["report.json<br/>indent=2"]:::file
+        OUTCSV["report.csv<br/>flattening: events_by_level.INFO → (metric, value)"]:::file
+        WRITE --> OUTJSON
+        WRITE --> OUTCSV
+    end
+
+    %% ============ ПОТОК ДАННЫХ ============
+    ORCH  ==>|"1. INPUT[]"| FACTORY
+    JSONL ==>|"2. yield Event"| EVENT
+    CSV   ==>|"2. yield Event"| EVENT
+    EVENT ==>|"3. event"| PROCESS
+    STATS ==>|"4. dict"| WRITE
+    WRITE ==>|"5. запись на диск"| OUTJSON
+    WRITE ==>|"5. запись на диск"| OUTCSV
+
+    %% ============ ОБРАБОТКА ОШИБОК ============
+    FAIL -.->|"raise"| ERRORS
+    ORCH -.->|"raise"| ERRORS
+    ERRORS -.->|"перехват StreamStatsError"| EXIT
+    FAIL -.-> EXIT
+
+    %% ============ НЕВИДИМЫЕ РЁБРА ДЛЯ КОМПОНОВКИ ============
+    CLI ~~~ ING
+    ING ~~~ DOM
+    DOM ~~~ ANA
+    ANA ~~~ REP
+```
